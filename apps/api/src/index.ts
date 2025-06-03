@@ -1,4 +1,5 @@
 import pino from 'pino';
+import fs from 'fs';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -21,6 +22,9 @@ const port = process.env.PORT || 3000;
 // Placeholder for actual server setup (e.g., Express)
 function startServer() {
   logger.info(`API server listening on port ${port}`);
+  // Create a health signal file
+  fs.writeFileSync('/tmp/healthy', 'API is healthy');
+  logger.info('Health signal file /tmp/healthy created for API.');
 }
 
 startServer();

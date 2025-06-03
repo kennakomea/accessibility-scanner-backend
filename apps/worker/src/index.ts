@@ -1,4 +1,5 @@
 import pino from 'pino';
+import fs from 'fs';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -22,6 +23,10 @@ function main() {
   setInterval(() => {
     // logger.debug('Worker heartbeat: still alive and processing...');
   }, 10000);
+
+  // Create a health signal file
+  fs.writeFileSync('/tmp/healthy', 'Worker is healthy');
+  logger.info('Health signal file /tmp/healthy created for Worker.');
 }
 
 main();

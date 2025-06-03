@@ -9,8 +9,10 @@ services:
       - ./apps/api:/usr/src/app/apps/api
       - /usr/src/app/node_modules
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       NODE_ENV: development
       REDIS_HOST: redis
@@ -20,6 +22,12 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: accessibility_scanner_dev
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   worker:
     build:
@@ -29,8 +37,10 @@ services:
       - ./apps/worker:/usr/src/app/apps/worker
       - /usr/src/app/node_modules
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       NODE_ENV: development
       REDIS_HOST: redis
@@ -40,22 +50,38 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: accessibility_scanner_dev
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   redis:
     image: "redis:alpine"
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - redis_data:/data
 
   postgres:
-    image: "postgres:14-alpine"
+    image: "postgres:15-alpine"
     ports:
       - "5432:5432"
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: accessibility_scanner_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d accessibility_scanner_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
