@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { Worker, Job } from 'bullmq';
 import fs from 'fs';
 
 const logger = pino({
@@ -15,56 +16,121 @@ const logger = pino({
   }),
 });
 
+const SCAN_QUEUE_NAME = 'scan-jobs';
+const redisConnectionOptions = {
+  host: process.env.REDIS_HOST || 'redis', // From docker-compose
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+  // Add maxRetriesPerRequest: null if you see connection issues in logs
+  // maxRetriesPerRequest: null,
+};
+
 logger.info('Worker service starting...');
 
-let workerInterval: NodeJS.Timeout | null = null;
-
-function main() {
-  logger.info('Worker processing tasks...');
-  // Placeholder for actual worker logic
-  workerInterval = setInterval(() => {
-    // logger.debug('Worker heartbeat: still alive and processing...');
-  }, 10000);
-
-  // Create a health signal file
-  fs.writeFileSync('/tmp/healthy', 'Worker is healthy');
-  logger.info('Health signal file /tmp/healthy created for Worker.');
+// Define an interface for the job data and result
+interface ScanJobData {
+  submittedUrl: string;
+  originalJobId: string;
 }
 
-main();
+interface ScanJobResult {
+  success: boolean;
+  jobId: string | undefined;
+  data: ScanJobData | undefined;
+}
 
-// Graceful shutdown handlers
-const signals = { 'SIGINT': 2, 'SIGTERM': 15 };
-let isShuttingDown = false;
+// Define the job processing function
+async function processScanJob(
+  job: Job<ScanJobData, ScanJobResult>,
+): Promise<ScanJobResult> {
+  logger.info(
+    { jobId: job.id, jobName: job.name, data: job.data },
+    'Processing job',
+  );
+  // Simulate work
+  await new Promise((resolve) => setTimeout(resolve, 5000)); // 5 seconds delay
+  logger.info({ jobId: job.id }, 'Job processing completed');
+  // In a real scenario, you would update job status, store results, etc.
+  return { success: true, jobId: job.id, data: job.data };
+}
 
-function shutdown(signal: keyof typeof signals, value: number) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  logger.warn(`Received signal ${signal}. Shutting down gracefully...`);
+// Initialize the BullMQ Worker
+const worker = new Worker<ScanJobData, ScanJobResult>(
+  SCAN_QUEUE_NAME,
+  processScanJob,
+  {
+    connection: redisConnectionOptions,
+    concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
+    removeOnComplete: { count: 1000 }, // Keep up to 1000 completed jobs
+    removeOnFail: { count: 5000 }, // Keep up to 5000 failed jobs
+  },
+);
 
-  if (workerInterval) {
-    clearInterval(workerInterval);
-    logger.info('Worker interval cleared.');
-  }
+worker.on(
+  'completed',
+  (job: Job<ScanJobData, ScanJobResult>, result: ScanJobResult) => {
+    logger.info({ jobId: job.id, result }, `Job completed`);
+  },
+);
 
+worker.on(
+  'failed',
+  (job: Job<ScanJobData, ScanJobResult> | undefined, err: Error) => {
+    if (job) {
+      logger.error(
+        { jobId: job.id, error: err.message, stack: err.stack },
+        `Job failed`,
+      );
+    } else {
+      logger.error(
+        { error: err.message, stack: err.stack },
+        `Job failed (job data unavailable)`,
+      );
+    }
+  },
+);
+
+worker.on('error', (err: Error) => {
+  logger.error({ error: err.message, stack: err.stack }, 'BullMQ worker error');
+});
+
+worker.on('ready', () => {
+  logger.info(
+    `Worker is ready and listening for jobs on queue '${SCAN_QUEUE_NAME}'. Concurrency: ${worker.opts.concurrency}`,
+  );
+  // Create a health signal file when the worker is ready
   try {
-    if (fs.existsSync('/tmp/healthy')) {
-      fs.unlinkSync('/tmp/healthy');
-      logger.info('Health signal file /tmp/healthy removed.');
+    fs.writeFileSync(
+      '/tmp/healthy_worker',
+      'Worker is healthy at ' + new Date().toISOString(),
+    );
+    logger.info('Health signal file /tmp/healthy_worker created for Worker.');
+  } catch (error) {
+    logger.error(
+      { err: error },
+      'Failed to create health signal file for Worker.',
+    );
+  }
+});
+
+logger.info('Worker initialized. Waiting for jobs...');
+
+// Graceful shutdown
+async function shutdown() {
+  logger.info('Shutting down worker gracefully...');
+  await worker.close();
+  try {
+    if (fs.existsSync('/tmp/healthy_worker')) {
+      fs.unlinkSync('/tmp/healthy_worker');
+      logger.info('Health signal file /tmp/healthy_worker removed.');
     }
   } catch (err) {
-    logger.error({ err }, 'Error removing health signal file during shutdown.');
+    logger.error(
+      { err },
+      'Error removing health signal file during shutdown for Worker.',
+    );
   }
-
-  // Allow a short delay for logs to flush before exiting
-  setTimeout(() => {
-    logger.info('Exiting worker process.');
-    process.exit(128 + value);
-  }, 500); // Reduced timeout, 1s was a bit long for simple cleanup
+  process.exit(0);
 }
 
-Object.keys(signals).forEach((signal) => {
-  process.on(signal as keyof typeof signals, () => {
-    shutdown(signal as keyof typeof signals, signals[signal as keyof typeof signals]);
-  });
-});
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

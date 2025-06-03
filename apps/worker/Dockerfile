@@ -23,5 +23,5 @@ RUN pnpm install --frozen-lockfile
 # Set the final working directory to the specific app
 WORKDIR /usr/src/app/apps/worker
 
-# The command to run the Worker application, using the dev script from apps/worker/package.json
-CMD ["pnpm", "dev"] 
+# The command to run the Worker application
+CMD ["pnpm", "exec", "ts-node", "-P", "./tsconfig.json", "src/index.ts"] 
