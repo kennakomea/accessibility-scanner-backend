@@ -1,6 +1,10 @@
 import pino from 'pino';
 import fs from 'fs';
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
+
+import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -19,6 +23,11 @@ const logger = pino({
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Define Zod schema for URL submission
+const SubmitUrlSchema = z.object({
+  url: z.string().url({ message: 'Invalid URL format' }),
+});
+
 // Middleware to parse JSON bodies
 app.use(express.json());
 
@@ -32,11 +41,75 @@ app.get('/healthz', (req: Request, res: Response) => {
   // Create the health signal file on demand for health checks
   // This replaces the on-startup file creation for more dynamic health status
   try {
-    fs.writeFileSync('/tmp/healthy', 'API is healthy at ' + new Date().toISOString());
+    fs.writeFileSync(
+      '/tmp/healthy',
+      'API is healthy at ' + new Date().toISOString(),
+    );
     res.status(200).send({ status: 'healthy', message: 'API is healthy' });
   } catch (error) {
     logger.error({ err: error }, 'Failed to write health signal file');
-    res.status(500).send({ status: 'unhealthy', message: 'Failed to write health signal' });
+    res
+      .status(500)
+      .send({ status: 'unhealthy', message: 'Failed to write health signal' });
+  }
+});
+
+// New endpoint for scan-website
+app.post('/api/scan-website', (req: Request, res: Response) => {
+  const validationResult = scanWebsiteSchema.safeParse(req.body);
+
+  if (!validationResult.success) {
+    logger.error(
+      { error: validationResult.error.issues },
+      'Invalid request body for /api/scan-website',
+    );
+    return res.status(400).send({
+      message: 'Invalid request body',
+      errors: validationResult.error.issues,
+    });
+  }
+
+  const { url } = validationResult.data;
+  const jobId = uuidv4();
+
+  logger.info(
+    { submittedUrl: url, jobId },
+    'Received URL for scanning, job enqueued (placeholder)',
+  );
+
+  // TODO: Actually enqueue the job with BullMQ (Task 3.3)
+
+  res.status(200).send({
+    message: 'Scan request received successfully. Job ID: ' + jobId,
+    jobId: jobId,
+    submittedUrl: url,
+  });
+});
+
+// Endpoint to submit a URL for scanning
+app.post('/api/submit-url', (req: Request, res: Response) => {
+  try {
+    // Validate request body
+    const validatedData = SubmitUrlSchema.parse(req.body);
+    const { url } = validatedData;
+
+    logger.info({ submittedUrl: url }, 'Received URL for scanning');
+
+    // TODO: Add URL to Redis queue for the worker (Task 3.2)
+
+    res.status(200).send({ message: 'URL received successfully', url });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      logger.error(
+        { error: error.issues },
+        'Invalid request body for URL submission',
+      );
+      return res
+        .status(400)
+        .send({ message: 'Invalid request body', errors: error.issues });
+    }
+    logger.error({ errorDetails: error }, 'Error processing URL submission');
+    res.status(500).send({ message: 'Internal server error' });
   }
 });
 
@@ -50,12 +123,15 @@ const server = app.listen(port, () => {
     fs.writeFileSync('/tmp/healthy', 'API is starting...');
     logger.info('Initial health signal file /tmp/healthy created for API.');
   } catch (error) {
-    logger.error({ err: error }, 'Failed to create initial health signal file.');
+    logger.error(
+      { err: error },
+      'Failed to create initial health signal file.',
+    );
   }
 });
 
 // Graceful shutdown handlers
-const signals = { 'SIGINT': 2, 'SIGTERM': 15 };
+const signals = { SIGINT: 2, SIGTERM: 15 };
 
 function shutdown(signal: keyof typeof signals, value: number) {
   logger.warn(`Received signal ${signal}. Shutting down gracefully...`);
@@ -68,7 +144,10 @@ function shutdown(signal: keyof typeof signals, value: number) {
         logger.info('Health signal file /tmp/healthy removed.');
       }
     } catch (err) {
-      logger.error({ err }, 'Error removing health signal file during shutdown.');
+      logger.error(
+        { err },
+        'Error removing health signal file during shutdown.',
+      );
     }
     process.exit(128 + value);
   });
@@ -76,6 +155,9 @@ function shutdown(signal: keyof typeof signals, value: number) {
 
 Object.keys(signals).forEach((signal) => {
   process.on(signal as keyof typeof signals, () => {
-    shutdown(signal as keyof typeof signals, signals[signal as keyof typeof signals]);
+    shutdown(
+      signal as keyof typeof signals,
+      signals[signal as keyof typeof signals],
+    );
   });
 });

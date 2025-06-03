@@ -8,6 +8,7 @@ RUN npm install -g pnpm
 
 # Copy the root package.json, pnpm-lock.yaml, and pnpm-workspace.yaml
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.base.json ./
 
 # Copy the 'apps' directory which contains the source code and package.json for all applications
 # This ensures that pnpm can find all workspace packages
@@ -25,5 +26,6 @@ WORKDIR /usr/src/app/apps/api
 # Expose the port the API will run on (defined in docker-compose.yml as well)
 EXPOSE 3000
 
-# The command to run the API application, using the dev script from apps/api/package.json
-CMD ["pnpm", "dev"] 
+# The command to run the API application
+# Using pnpm exec and -P flag to specify tsconfig for ts-node
+CMD ["pnpm", "exec", "ts-node", "-P", "./tsconfig.json", "src/index.ts"] 

@@ -8,6 +8,7 @@ RUN npm install -g pnpm
 
 # Copy the root package.json, pnpm-lock.yaml, and pnpm-workspace.yaml
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.base.json ./
 
 # Copy the 'apps' directory which contains the source code and package.json for all applications
 # This ensures that pnpm can find all workspace packages
