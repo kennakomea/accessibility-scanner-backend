@@ -5,6 +5,11 @@ import puppeteer from 'puppeteer';
 import * as axe from 'axe-core';
 import { Pool } from 'pg';
 
+// Define an interface for the context where axe.run is called
+interface AxeContext {
+  axe: typeof axe;
+}
+
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   ...(process.env.NODE_ENV !== 'production' && {
@@ -56,7 +61,10 @@ pool.on('connect', () => {
 });
 
 pool.on('error', (err) => {
-  logger.error({ error: err.message, stack: err.stack }, 'PostgreSQL pool error');
+  logger.error(
+    { error: err.message, stack: err.stack },
+    'PostgreSQL pool error',
+  );
 });
 
 logger.info('Worker service starting...');
@@ -108,29 +116,45 @@ async function processScanJob(
     actualUrl = response?.url() || urlToScan; // Get actual URL after redirects
 
     pageTitleFromScan = await page.title();
-    logger.info({ jobId: job.id, title: pageTitleFromScan, actualUrl }, 'Page title retrieved');
+    logger.info(
+      { jobId: job.id, title: pageTitleFromScan, actualUrl },
+      'Page title retrieved',
+    );
 
     if (!pageTitleFromScan) {
       logger.warn({ jobId: job.id, url: actualUrl }, 'Page title is empty');
     }
 
-    const axeScript = await fs.promises.readFile(require.resolve('axe-core'), 'utf8');
+    const axeScript = await fs.promises.readFile(
+      require.resolve('axe-core'),
+      'utf8',
+    );
     await page.evaluate(axeScript);
 
-    axeScanResults = await page.evaluate(() => {
+    axeScanResults = (await page.evaluate(() => {
       // @ts-expect-error TS2304: Cannot find name 'window'. 'window' is a browser global.
-      return (window as any).axe.run();
-    }) as axe.AxeResults;
+      return (window as unknown as AxeContext).axe.run();
+    })) as axe.AxeResults;
 
-    logger.info({ jobId: job.id, violations: axeScanResults.violations.length }, 'Axe-core scan completed');
+    logger.info(
+      { jobId: job.id, violations: axeScanResults.violations.length },
+      'Axe-core scan completed',
+    );
 
     if (axeScanResults.violations.length > 0) {
-      logger.warn({ jobId: job.id, violations: axeScanResults.violations }, 'Accessibility violations found');
+      logger.warn(
+        { jobId: job.id, violations: axeScanResults.violations },
+        'Accessibility violations found',
+      );
     }
     scanSucceeded = true;
-    logger.info({ jobId: job.id }, 'Job processing completed successfully by Puppeteer/Axe');
+    logger.info(
+      { jobId: job.id },
+      'Job processing completed successfully by Puppeteer/Axe',
+    );
   } catch (e: unknown) {
-    let errMessage = 'An unknown error occurred during Puppeteer or Axe-core processing';
+    let errMessage =
+      'An unknown error occurred during Puppeteer or Axe-core processing';
     let errStack: string | undefined;
     let caughtError: Error;
 
@@ -174,14 +198,17 @@ async function processScanJob(
         actualUrl,
         pageTitleFromScan,
         true,
-        JSON.stringify(axeScanResults?.violations), 
+        JSON.stringify(axeScanResults?.violations),
         null,
       ];
       const res = await pool.query(insertQuery, values);
-      logger.info({ jobId: job.id, dbRecordId: res.rows[0].id }, 'Scan result saved to database');
+      logger.info(
+        { jobId: job.id, dbRecordId: res.rows[0].id },
+        'Scan result saved to database',
+      );
       dbSaveSuccess = true;
     } catch (dbErrUnknown: unknown) {
-      let specificErrorMsg = "Unknown database error";
+      let specificErrorMsg = 'Unknown database error';
       let errorStack: string | undefined;
       if (dbErrUnknown instanceof Error) {
         specificErrorMsg = dbErrUnknown.message;
@@ -215,10 +242,14 @@ async function processScanJob(
         processingError?.message,
       ];
       const res = await pool.query(insertQuery, values);
-      logger.info({ jobId: job.id, dbRecordId: res.rows[0].id }, 'Scan failure attempt logged to database');
+      logger.info(
+        { jobId: job.id, dbRecordId: res.rows[0].id },
+        'Scan failure attempt logged to database',
+      );
       dbSaveSuccess = true;
     } catch (dbErrUnknown: unknown) {
-      let specificErrorMsg = "Unknown database error while saving failure record";
+      let specificErrorMsg =
+        'Unknown database error while saving failure record';
       let errorStack: string | undefined;
       if (dbErrUnknown instanceof Error) {
         specificErrorMsg = dbErrUnknown.message;
@@ -228,7 +259,12 @@ async function processScanJob(
       }
       dbErrorMessage = `Failed to save scan failure record to database: ${specificErrorMsg}`;
       logger.error(
-        { jobId: job.id, error: specificErrorMsg, stack: errorStack, originalProcessingError: processingError?.message },
+        {
+          jobId: job.id,
+          error: specificErrorMsg,
+          stack: errorStack,
+          originalProcessingError: processingError?.message,
+        },
         dbErrorMessage,
       );
     }
@@ -251,15 +287,16 @@ async function processScanJob(
       if (finalErrorMessage) finalErrorMessage += '; ';
       finalErrorMessage += dbErrorMessage;
     }
-    if (!finalErrorMessage) finalErrorMessage = 'Unknown processing or DB error';
+    if (!finalErrorMessage)
+      finalErrorMessage = 'Unknown processing or DB error';
 
     return {
       success: false,
       jobId: job.id,
       data: job.data,
       errorMessage: finalErrorMessage,
-      pageTitle: pageTitleFromScan, 
-      actualUrl: actualUrl,     
+      pageTitle: pageTitleFromScan,
+      actualUrl: actualUrl,
     };
   }
 }
