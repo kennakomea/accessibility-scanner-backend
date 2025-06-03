@@ -4,6 +4,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { Queue } from 'bullmq';
+import { Pool } from 'pg';
 
 import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
 
@@ -43,6 +44,26 @@ const scanQueue = new Queue(SCAN_QUEUE_NAME, {
 });
 
 logger.info(`BullMQ queue '${SCAN_QUEUE_NAME}' initialized.`);
+
+// PostgreSQL Connection Pool
+const pool = new Pool({
+  host: process.env.POSTGRES_HOST || 'postgres',
+  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
+  user: process.env.POSTGRES_USER || 'user',
+  password: process.env.POSTGRES_PASSWORD || 'password',
+  database: process.env.POSTGRES_DB || 'accessibility_scanner_dev',
+});
+
+pool.on('connect', () => {
+  logger.info('API Service connected to PostgreSQL database');
+});
+
+pool.on('error', (err: Error) => {
+  logger.error(
+    { error: err.message, stack: err.stack },
+    'API Service PostgreSQL pool error',
+  );
+});
 
 // Define Zod schema for URL submission
 const SubmitUrlSchema = z.object({
@@ -122,6 +143,61 @@ app.post('/api/scan-website', async (req: Request, res: Response) => {
   }
 });
 
+// New endpoint to get scan results by Job ID
+app.get('/api/scan-results/:jobId', async (req: Request, res: Response) => {
+  const { jobId } = req.params;
+
+  if (!jobId) {
+    return res.status(400).send({ message: 'Job ID is required' });
+  }
+
+  try {
+    logger.info({ jobId }, 'Fetching scan result for Job ID');
+    const query =
+      'SELECT * FROM scan_results WHERE job_id = $1 OR original_job_id = $1';
+    const { rows } = await pool.query(query, [jobId]);
+
+    if (rows.length === 0) {
+      logger.warn({ jobId }, 'Scan result not found for Job ID');
+      return res.status(404).send({ message: 'Scan result not found' });
+    }
+
+    const result = rows[0];
+    if (result.violations && typeof result.violations === 'string') {
+      try {
+        result.violations = JSON.parse(result.violations);
+      } catch (parseError) {
+        logger.warn(
+          { jobId, error: parseError },
+          'Failed to parse violations JSON string from DB',
+        );
+      }
+    }
+
+    logger.info(
+      { jobId, resultId: result.id },
+      'Scan result retrieved successfully',
+    );
+    res.status(200).send(result);
+  } catch (error) {
+    let errorMessage = 'Failed to fetch scan result';
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    }
+    logger.error(
+      {
+        jobId,
+        error: errorMessage,
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+      'Error fetching scan result from database',
+    );
+    res
+      .status(500)
+      .send({ message: 'Internal server error while fetching scan result' });
+  }
+});
+
 // Endpoint to submit a URL for scanning
 app.post('/api/submit-url', (req: Request, res: Response) => {
   try {
@@ -178,6 +254,14 @@ async function shutdown(signal: keyof typeof signals, value: number) {
     logger.info(`BullMQ queue '${SCAN_QUEUE_NAME}' closed.`);
   } catch (err) {
     logger.error({ err }, `Error closing BullMQ queue '${SCAN_QUEUE_NAME}'.`);
+  }
+
+  // Close PostgreSQL pool
+  try {
+    await pool.end();
+    logger.info('API Service PostgreSQL pool closed.');
+  } catch (err) {
+    logger.error({ err }, 'Error closing API Service PostgreSQL pool.');
   }
 
   server.close(() => {

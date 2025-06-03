@@ -1,4 +1,9 @@
-#!/usr/bin/env sh
-. "$(dirname -- "$0")/_/husky.sh"
+#!/bin/sh
+# . "$(dirname -- "$0")/_/husky.sh" # This line is often not needed if husky is set up via prepare script
 
+# Exit on error
+set -e
+
+echo "Running pre-commit hook (lint-staged)..."
 pnpm exec lint-staged
+echo "Pre-commit hook finished."
