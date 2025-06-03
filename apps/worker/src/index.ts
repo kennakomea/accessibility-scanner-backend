@@ -1,6 +1,9 @@
 import pino from 'pino';
 import { Worker, Job } from 'bullmq';
 import fs from 'fs';
+import puppeteer from 'puppeteer';
+import * as axe from 'axe-core';
+import { Pool } from 'pg';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -24,6 +27,38 @@ const redisConnectionOptions = {
   // maxRetriesPerRequest: null,
 };
 
+// PostgreSQL Connection Pool
+// SQL to create the table (run this manually or via a migration script):
+/*
+CREATE TABLE scan_results (
+  id SERIAL PRIMARY KEY,
+  job_id VARCHAR(255) UNIQUE,
+  original_job_id VARCHAR(255),
+  submitted_url TEXT NOT NULL,
+  actual_url TEXT,
+  scan_timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  page_title TEXT,
+  scan_success BOOLEAN NOT NULL,
+  violations JSONB,
+  error_message TEXT
+);
+*/
+const pool = new Pool({
+  host: process.env.POSTGRES_HOST || 'postgres',
+  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
+  user: process.env.POSTGRES_USER || 'user',
+  password: process.env.POSTGRES_PASSWORD || 'password',
+  database: process.env.POSTGRES_DB || 'accessibility_scanner_dev',
+});
+
+pool.on('connect', () => {
+  logger.info('Connected to PostgreSQL database');
+});
+
+pool.on('error', (err) => {
+  logger.error({ error: err.message, stack: err.stack }, 'PostgreSQL pool error');
+});
+
 logger.info('Worker service starting...');
 
 // Define an interface for the job data and result
@@ -36,6 +71,10 @@ interface ScanJobResult {
   success: boolean;
   jobId: string | undefined;
   data: ScanJobData | undefined;
+  violations?: axe.Result[];
+  errorMessage?: string;
+  pageTitle?: string;
+  actualUrl?: string;
 }
 
 // Define the job processing function
@@ -46,11 +85,183 @@ async function processScanJob(
     { jobId: job.id, jobName: job.name, data: job.data },
     'Processing job',
   );
-  // Simulate work
-  await new Promise((resolve) => setTimeout(resolve, 5000)); // 5 seconds delay
-  logger.info({ jobId: job.id }, 'Job processing completed');
-  // In a real scenario, you would update job status, store results, etc.
-  return { success: true, jobId: job.id, data: job.data };
+
+  let browser;
+  let actualUrl;
+  let pageTitleFromScan;
+  let scanSucceeded = false;
+  let axeScanResults: axe.AxeResults | undefined;
+  let processingError: Error | undefined;
+  let dbErrorMessage: string | undefined;
+
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    const page = await browser.newPage();
+    await page.setDefaultNavigationTimeout(30000);
+
+    const urlToScan = job.data?.submittedUrl || 'https://example.com';
+    logger.info({ jobId: job.id, url: urlToScan }, 'Navigating to page');
+    const response = await page.goto(urlToScan, { waitUntil: 'networkidle2' });
+    actualUrl = response?.url() || urlToScan; // Get actual URL after redirects
+
+    pageTitleFromScan = await page.title();
+    logger.info({ jobId: job.id, title: pageTitleFromScan, actualUrl }, 'Page title retrieved');
+
+    if (!pageTitleFromScan) {
+      logger.warn({ jobId: job.id, url: actualUrl }, 'Page title is empty');
+    }
+
+    const axeScript = await fs.promises.readFile(require.resolve('axe-core'), 'utf8');
+    await page.evaluate(axeScript);
+
+    axeScanResults = await page.evaluate(() => {
+      // @ts-expect-error TS2304: Cannot find name 'window'. 'window' is a browser global.
+      return (window as any).axe.run();
+    }) as axe.AxeResults;
+
+    logger.info({ jobId: job.id, violations: axeScanResults.violations.length }, 'Axe-core scan completed');
+
+    if (axeScanResults.violations.length > 0) {
+      logger.warn({ jobId: job.id, violations: axeScanResults.violations }, 'Accessibility violations found');
+    }
+    scanSucceeded = true;
+    logger.info({ jobId: job.id }, 'Job processing completed successfully by Puppeteer/Axe');
+  } catch (e: unknown) {
+    let errMessage = 'An unknown error occurred during Puppeteer or Axe-core processing';
+    let errStack: string | undefined;
+    let caughtError: Error;
+
+    if (e instanceof Error) {
+      errMessage = e.message;
+      errStack = e.stack;
+      caughtError = e;
+    } else if (typeof e === 'string') {
+      errMessage = e;
+      caughtError = new Error(e);
+    } else {
+      caughtError = new Error(errMessage);
+    }
+    processingError = caughtError;
+
+    logger.error(
+      { jobId: job.id, error: errMessage, stack: errStack },
+      'Error during Puppeteer or Axe-core processing',
+    );
+  } finally {
+    if (browser) {
+      await browser.close();
+      logger.info({ jobId: job.id }, 'Browser closed');
+    }
+  }
+
+  let dbSaveSuccess = false;
+  if (scanSucceeded) {
+    try {
+      const insertQuery = `
+        INSERT INTO scan_results 
+          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message)
+        VALUES 
+          ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id;
+      `;
+      const values = [
+        job.id,
+        job.data?.originalJobId,
+        job.data?.submittedUrl,
+        actualUrl,
+        pageTitleFromScan,
+        true,
+        JSON.stringify(axeScanResults?.violations), 
+        null,
+      ];
+      const res = await pool.query(insertQuery, values);
+      logger.info({ jobId: job.id, dbRecordId: res.rows[0].id }, 'Scan result saved to database');
+      dbSaveSuccess = true;
+    } catch (dbErrUnknown: unknown) {
+      let specificErrorMsg = "Unknown database error";
+      let errorStack: string | undefined;
+      if (dbErrUnknown instanceof Error) {
+        specificErrorMsg = dbErrUnknown.message;
+        errorStack = dbErrUnknown.stack;
+      } else if (typeof dbErrUnknown === 'string') {
+        specificErrorMsg = dbErrUnknown;
+      }
+      dbErrorMessage = `Failed to save scan result to database: ${specificErrorMsg}`;
+      logger.error(
+        { jobId: job.id, error: specificErrorMsg, stack: errorStack },
+        dbErrorMessage,
+      );
+    }
+  } else {
+    try {
+      const insertQuery = `
+        INSERT INTO scan_results 
+          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message)
+        VALUES 
+          ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id;
+      `;
+      const values = [
+        job.id,
+        job.data?.originalJobId,
+        job.data?.submittedUrl,
+        actualUrl,
+        pageTitleFromScan,
+        false,
+        null,
+        processingError?.message,
+      ];
+      const res = await pool.query(insertQuery, values);
+      logger.info({ jobId: job.id, dbRecordId: res.rows[0].id }, 'Scan failure attempt logged to database');
+      dbSaveSuccess = true;
+    } catch (dbErrUnknown: unknown) {
+      let specificErrorMsg = "Unknown database error while saving failure record";
+      let errorStack: string | undefined;
+      if (dbErrUnknown instanceof Error) {
+        specificErrorMsg = dbErrUnknown.message;
+        errorStack = dbErrUnknown.stack;
+      } else if (typeof dbErrUnknown === 'string') {
+        specificErrorMsg = dbErrUnknown;
+      }
+      dbErrorMessage = `Failed to save scan failure record to database: ${specificErrorMsg}`;
+      logger.error(
+        { jobId: job.id, error: specificErrorMsg, stack: errorStack, originalProcessingError: processingError?.message },
+        dbErrorMessage,
+      );
+    }
+  }
+
+  const overallJobSuccess = scanSucceeded && dbSaveSuccess;
+
+  if (overallJobSuccess) {
+    return {
+      success: true,
+      jobId: job.id,
+      data: job.data,
+      violations: axeScanResults!.violations,
+      pageTitle: pageTitleFromScan,
+      actualUrl: actualUrl,
+    };
+  } else {
+    let finalErrorMessage = processingError?.message || '';
+    if (dbErrorMessage) {
+      if (finalErrorMessage) finalErrorMessage += '; ';
+      finalErrorMessage += dbErrorMessage;
+    }
+    if (!finalErrorMessage) finalErrorMessage = 'Unknown processing or DB error';
+
+    return {
+      success: false,
+      jobId: job.id,
+      data: job.data,
+      errorMessage: finalErrorMessage,
+      pageTitle: pageTitleFromScan, 
+      actualUrl: actualUrl,     
+    };
+  }
 }
 
 // Initialize the BullMQ Worker
@@ -60,8 +271,8 @@ const worker = new Worker<ScanJobData, ScanJobResult>(
   {
     connection: redisConnectionOptions,
     concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
-    removeOnComplete: { count: 1000 }, // Keep up to 1000 completed jobs
-    removeOnFail: { count: 5000 }, // Keep up to 5000 failed jobs
+    removeOnComplete: { count: 1000 },
+    removeOnFail: { count: 5000 },
   },
 );
 
@@ -97,7 +308,6 @@ worker.on('ready', () => {
   logger.info(
     `Worker is ready and listening for jobs on queue '${SCAN_QUEUE_NAME}'. Concurrency: ${worker.opts.concurrency}`,
   );
-  // Create a health signal file when the worker is ready
   try {
     fs.writeFileSync(
       '/tmp/healthy_worker',
@@ -114,10 +324,10 @@ worker.on('ready', () => {
 
 logger.info('Worker initialized. Waiting for jobs...');
 
-// Graceful shutdown
 async function shutdown() {
   logger.info('Shutting down worker gracefully...');
   await worker.close();
+  await pool.end();
   try {
     if (fs.existsSync('/tmp/healthy_worker')) {
       fs.unlinkSync('/tmp/healthy_worker');
