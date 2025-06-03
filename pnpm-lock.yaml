@@ -63,6 +63,9 @@ importers:
       express:
         specifier: ^4.17.1
         version: 4.21.2
+      pg:
+        specifier: ^8.16.0
+        version: 8.16.0
       uuid:
         specifier: ^9.0.1
         version: 9.0.1
@@ -76,6 +79,9 @@ importers:
       '@types/node':
         specifier: ^18.0.0
         version: 18.19.110
+      '@types/pg':
+        specifier: ^8.15.4
+        version: 8.15.4
       '@types/uuid':
         specifier: ^9.0.8
         version: 9.0.8
