@@ -3,6 +3,7 @@ import fs from 'fs';
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
+import { Queue } from 'bullmq';
 
 import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
 
@@ -22,6 +23,26 @@ const logger = pino({
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// BullMQ Queue setup
+const SCAN_QUEUE_NAME = 'scan-jobs';
+const redisConnectionOptions = {
+  host: process.env.REDIS_HOST || 'redis',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+};
+
+const scanQueue = new Queue(SCAN_QUEUE_NAME, {
+  connection: redisConnectionOptions,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 1000,
+    },
+  },
+});
+
+logger.info(`BullMQ queue '${SCAN_QUEUE_NAME}' initialized.`);
 
 // Define Zod schema for URL submission
 const SubmitUrlSchema = z.object({
@@ -55,7 +76,7 @@ app.get('/healthz', (req: Request, res: Response) => {
 });
 
 // New endpoint for scan-website
-app.post('/api/scan-website', (req: Request, res: Response) => {
+app.post('/api/scan-website', async (req: Request, res: Response) => {
   const validationResult = scanWebsiteSchema.safeParse(req.body);
 
   if (!validationResult.success) {
@@ -72,18 +93,33 @@ app.post('/api/scan-website', (req: Request, res: Response) => {
   const { url } = validationResult.data;
   const jobId = uuidv4();
 
-  logger.info(
-    { submittedUrl: url, jobId },
-    'Received URL for scanning, job enqueued (placeholder)',
-  );
+  try {
+    // Add job to the BullMQ queue
+    await scanQueue.add(
+      'scan-url',
+      { submittedUrl: url, originalJobId: jobId },
+      { jobId: jobId },
+    );
 
-  // TODO: Actually enqueue the job with BullMQ (Task 3.3)
+    logger.info(
+      { submittedUrl: url, jobId },
+      `Job enqueued successfully in '${SCAN_QUEUE_NAME}'`,
+    );
 
-  res.status(200).send({
-    message: 'Scan request received successfully. Job ID: ' + jobId,
-    jobId: jobId,
-    submittedUrl: url,
-  });
+    res.status(202).send({
+      message: 'Scan request accepted and enqueued. Job ID: ' + jobId,
+      jobId: jobId,
+      submittedUrl: url,
+    });
+  } catch (error) {
+    logger.error(
+      { err: error, submittedUrl: url, jobId },
+      `Failed to enqueue job in '${SCAN_QUEUE_NAME}'`,
+    );
+    res.status(500).send({
+      message: 'Failed to enqueue scan request. Please try again later.',
+    });
+  }
 });
 
 // Endpoint to submit a URL for scanning
@@ -133,8 +169,17 @@ const server = app.listen(port, () => {
 // Graceful shutdown handlers
 const signals = { SIGINT: 2, SIGTERM: 15 };
 
-function shutdown(signal: keyof typeof signals, value: number) {
+async function shutdown(signal: keyof typeof signals, value: number) {
   logger.warn(`Received signal ${signal}. Shutting down gracefully...`);
+
+  // Close BullMQ queue
+  try {
+    await scanQueue.close();
+    logger.info(`BullMQ queue '${SCAN_QUEUE_NAME}' closed.`);
+  } catch (err) {
+    logger.error({ err }, `Error closing BullMQ queue '${SCAN_QUEUE_NAME}'.`);
+  }
+
   server.close(() => {
     logger.info('HTTP server closed.');
     // In a real app, close database connections, message queues, etc.
