@@ -1,7 +1,19 @@
-FROM node:18-alpine AS base
+FROM node:18-alpine AS builder
 
-# Install Chromium and its dependencies for Puppeteer on Alpine
+# Set working directory to represent the monorepo root within the image
+WORKDIR /app
+
+# Install pnpm globally
+RUN npm install -g pnpm
+
+# Install necessary build tools, Chromium for Puppeteer, and other utilities
 RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    git \
+    unzip \
+    dumb-init \
     chromium \
     nss \
     freetype \
@@ -15,29 +27,67 @@ RUN apk add --no-cache \
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Set the working directory for the entire build process
-WORKDIR /usr/src/app
+# Copy the root workspace files.
+# Paths are relative to this Dockerfile's location (apps/worker), going up to the monorepo root.
+COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ./
+COPY ../../tsconfig.base.json ./
 
-# Install pnpm globally in the image
-RUN npm install -g pnpm
-
-# Copy the root package.json, pnpm-lock.yaml, and pnpm-workspace.yaml
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY tsconfig.base.json ./
-
-# Copy the 'apps' directory which contains the source code and package.json for all applications
-# This ensures that pnpm can find all workspace packages
-COPY apps ./apps
+# Copy all application code from the monorepo's "apps" directory.
+# `../` refers to `accessibility-scanner-backend/apps/`.
+# This copies the contents of `accessibility-scanner-backend/apps/` (i.e., api/, worker/)
+# into `/app/apps/` inside the image.
+COPY ../ ./apps/
 
 # Install dependencies for all workspace projects.
-# Using --frozen-lockfile is good practice for CI/builds
-# We install all dependencies because this Dockerfile might be used for dev, where devDeps are needed.
-# For a production build, you might use `RUN pnpm install --filter @accessibility-scanner-backend/worker --prod`
-# Puppeteer will skip downloading its own Chrome due to PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# pnpm will handle the workspace structure correctly.
 RUN pnpm install --frozen-lockfile
 
-# Set the final working directory to the specific app
-WORKDIR /usr/src/app/apps/worker
+# Build the specific application (Worker).
+# The appName is defined in apps/worker/package.json ("name": "@accessibility-scanner-backend/worker")
+RUN pnpm --filter @accessibility-scanner-backend/worker run build
+# This will create /app/apps/worker/dist
 
-# The command to run the Worker application
-CMD ["pnpm", "exec", "ts-node", "-P", "./tsconfig.json", "src/index.ts"] 
+# --- Release Stage ---
+FROM node:18-alpine AS release
+
+WORKDIR /app
+
+# Install dumb-init, Chromium and its dependencies for Puppeteer runtime.
+# Also install pnpm if you intend to use `pnpm exec` in the CMD, otherwise it might not be needed for `node dist/index.js`.
+RUN apk add --no-cache \
+    dumb-init \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ttf-freefont \
+    udev \
+    fontconfig \
+    dbus \
+    && npm install -g pnpm
+
+# Set environment variables for Puppeteer again for the release stage
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+# Copy only the necessary production artifacts for the Worker app from the builder stage.
+# Copy the built 'dist' folder of the Worker app.
+COPY --from=builder /app/apps/worker/dist ./apps/worker/dist
+
+# Copy the Worker app's package.json.
+COPY --from=builder /app/apps/worker/package.json ./apps/worker/package.json
+
+# Copy the root package.json and workspace files for pnpm to understand the context for installing filtered prod dependencies.
+COPY --from=builder /app/package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ./
+
+# Reinstall production dependencies for only the Worker service in its final location.
+# This ensures a lean production image with only necessary node_modules for the worker.
+RUN pnpm install --prod --frozen-lockfile --filter @accessibility-scanner-backend/worker...
+
+# Set the final working directory to the specific app for running it.
+WORKDIR /app/apps/worker
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+
+# The "start" script in apps/worker/package.json is "node dist/index.js".
+CMD ["node", "dist/index.js"] 
