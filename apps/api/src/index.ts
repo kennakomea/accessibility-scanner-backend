@@ -53,6 +53,7 @@ interface ScanResultFromDB {
   scan_success?: boolean;
   violations: AxeViolation[];
   error_message?: string;
+  page_screenshot?: string;
 }
 
 // Define PageHealthStatusReport, as it is used by calculatePageHealthReport
@@ -382,6 +383,7 @@ function generateReportHtml(dbResult: ScanResultFromDB): string {
     (sum: number, v: AxeViolation) => sum + (v.nodes?.length || 0),
     0,
   );
+  const pageScreenshotBase64 = dbResult.page_screenshot;
 
   const violationsHtml =
     axeViolations && axeViolations.length > 0
@@ -555,6 +557,16 @@ function generateReportHtml(dbResult: ScanResultFromDB): string {
             </div>
           </div>
         </section>
+        ${
+          pageScreenshotBase64
+            ? `
+        <section class="screenshot-section">
+          <h2>Page Screenshot</h2>
+          <img src="data:image/jpeg;base64,${pageScreenshotBase64}" alt="Screenshot of the scanned page" style="width: 100%; max-width: 600px; height: auto; border: 1px solid #ccc; margin-top: 10px;" />
+        </section>
+        `
+            : ''
+        }
         <section class="violations-section">
           <h2>Detailed Violations</h2>
           ${violationsHtml}

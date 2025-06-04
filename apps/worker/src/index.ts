@@ -101,6 +101,7 @@ async function processScanJob(
   let axeScanResults: axe.AxeResults | undefined;
   let processingError: Error | undefined;
   let dbErrorMessage: string | undefined;
+  let pageScreenshotBase64: string | undefined;
 
   try {
     browser = await puppeteer.launch({
@@ -130,6 +131,28 @@ async function processScanJob(
       'utf8',
     );
     await page.evaluate(axeScript);
+
+    // Capture screenshot after page load and before Axe scan
+    try {
+      pageScreenshotBase64 = await page.screenshot({
+        encoding: 'base64',
+        type: 'jpeg',
+        quality: 75,
+      });
+      logger.info({ jobId: job.id }, 'Page screenshot captured successfully.');
+    } catch (screenshotError: unknown) {
+      logger.warn(
+        {
+          jobId: job.id,
+          error:
+            screenshotError instanceof Error
+              ? screenshotError.message
+              : String(screenshotError),
+        },
+        'Failed to capture page screenshot.',
+      );
+      // Not treating screenshot failure as a critical error for the scan itself
+    }
 
     axeScanResults = (await page.evaluate(() => {
       // @ts-expect-error TS2304: Cannot find name 'window'. 'window' is a browser global.
@@ -185,10 +208,10 @@ async function processScanJob(
   if (scanSucceeded) {
     try {
       const insertQuery = `
-        INSERT INTO scan_results 
-          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message)
-        VALUES 
-          ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO scan_results
+          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message, page_screenshot)
+        VALUES
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id;
       `;
       const values = [
@@ -200,6 +223,7 @@ async function processScanJob(
         true,
         JSON.stringify(axeScanResults?.violations),
         null,
+        pageScreenshotBase64 || null,
       ];
       const res = await pool.query(insertQuery, values);
       logger.info(
@@ -225,10 +249,10 @@ async function processScanJob(
   } else {
     try {
       const insertQuery = `
-        INSERT INTO scan_results 
-          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message)
-        VALUES 
-          ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO scan_results
+          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message, page_screenshot)
+        VALUES
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id;
       `;
       const values = [
@@ -240,6 +264,7 @@ async function processScanJob(
         false,
         null,
         processingError?.message,
+        pageScreenshotBase64 || null,
       ];
       const res = await pool.query(insertQuery, values);
       logger.info(
