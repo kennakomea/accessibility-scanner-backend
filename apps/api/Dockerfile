@@ -12,27 +12,13 @@ RUN npm install -g pnpm
 # Install necessary build tools for native modules and other utilities
 RUN apk add --no-cache python3 make g++ git unzip dumb-init
 
-# Copy the root workspace files.
-# Paths are relative to this Dockerfile's location (apps/api), going up to the monorepo root.
-COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ./
-COPY ../../tsconfig.base.json ./
+# Copy the files needed for installation and building.
+# This includes the entire 'apps' directory to ensure the pnpm workspace is complete.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.base.json ./
+COPY apps ./apps
 
-# Copy all application code from the monorepo's "apps" directory.
-# `../` refers to `accessibility-scanner-backend/apps/`.
-# This copies the contents of `accessibility-scanner-backend/apps/` (i.e., api/, worker/)
-# into `/app/apps/` inside the image.
-COPY ../ ./apps/
-
-# At this point, the image structure for building is:
-# /app/package.json (root)
-# /app/pnpm-lock.yaml
-# /app/pnpm-workspace.yaml
-# /app/tsconfig.base.json
-# /app/apps/api/...
-# /app/apps/worker/...
-
-# Install dependencies for all workspace projects.
-# pnpm will handle the workspace structure correctly.
+# We install dependencies. pnpm correctly finds everything now.
 RUN pnpm install --frozen-lockfile
 
 # Build the specific application (API).

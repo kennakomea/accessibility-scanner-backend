@@ -30,19 +30,14 @@ RUN apk add --no-cache \
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Copy the root workspace files.
-# Paths are relative to this Dockerfile's location (apps/worker), going up to the monorepo root.
-COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ./
-COPY ../../tsconfig.base.json ./
-
-# Copy all application code from the monorepo's "apps" directory.
-# `../` refers to `accessibility-scanner-backend/apps/`.
-# This copies the contents of `accessibility-scanner-backend/apps/` (i.e., api/, worker/)
-# into `/app/apps/` inside the image.
-COPY ../ ./apps/
+# Copy the files needed for installation and building.
+# This includes the entire 'apps' directory to ensure the pnpm workspace is complete.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.base.json ./
+COPY apps ./apps
 
 # Install dependencies for all workspace projects.
-# pnpm will handle the workspace structure correctly.
+# pnpm will handle the workspace structure correctly now.
 RUN pnpm install --frozen-lockfile
 
 # Build the specific application (Worker).
