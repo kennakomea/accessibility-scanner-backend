@@ -73,24 +73,18 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 # Create a subdirectory for the app's package.json to ensure pnpm workspace setup is recognized
 RUN mkdir -p ./apps/worker
 
-# Copy the built 'dist' folder directly into the root of the WORKDIR
+# Copy the built 'dist' folder from the builder stage.
 COPY --from=builder /app/apps/worker/dist ./dist
 
-# Copy the Worker app's package.json.
-COPY --from=builder /app/apps/worker/package.json ./apps/worker/package.json
+# Copy the necessary package.json files directly from the build context.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/worker/package.json ./apps/worker/package.json
 
-# Copy the root package.json and workspace files for pnpm to understand the context for installing filtered prod dependencies.
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/pnpm-lock.yaml ./
-COPY --from=builder /app/pnpm-workspace.yaml ./
+# Reinstall production dependencies for only the Worker service.
+RUN pnpm install --prod --filter @accessibility-scanner-backend/worker
 
-# Reinstall production dependencies for only the Worker service in its final location.
-# This ensures a lean production image with only necessary node_modules for the worker.
-RUN pnpm install --prod --frozen-lockfile --filter @accessibility-scanner-backend/worker...
-
-# The WORKDIR is already /app, so the start command path is simple.
+# Use dumb-init to handle signals correctly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
-# The "start" script in apps/worker/package.json is "node dist/index.js".
-# This will be used if the Railway start command is set correctly.
+# Set the start command to run the built application.
 CMD ["node", "dist/index.js"] 

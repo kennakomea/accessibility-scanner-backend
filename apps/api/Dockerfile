@@ -49,26 +49,19 @@ RUN apk add --no-cache dumb-init && npm install -g pnpm
 # Create a subdirectory for the app's package.json to ensure pnpm workspace setup is recognized
 RUN mkdir -p ./apps/api
 
-# Copy the built 'dist' folder directly into the root of the WORKDIR
+# Copy the built 'dist' folder from the builder stage.
 COPY --from=builder /app/apps/api/dist ./dist
 
-# Copy the API app's package.json into its new location.
-COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
-
-# Copy the root package.json and workspace files for pnpm to understand the context for runtime.
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/pnpm-lock.yaml ./
-COPY --from=builder /app/pnpm-workspace.yaml ./
+# Copy the necessary package.json files directly from the build context, not from the builder stage.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json ./apps/api/package.json
 
 # Reinstall production dependencies for only the API service in its final location.
-# This ensures a lean production image with only necessary node_modules.
-# The WORKDIR is the monorepo root for `pnpm install --filter` to work correctly referencing the workspace.
-RUN pnpm install --prod --frozen-lockfile --filter @accessibility-scanner-backend/api...
+# This ensures a lean production image with only necessary dependencies.
+RUN pnpm install --prod --filter @accessibility-scanner-backend/api
 
-# The WORKDIR is already /app, so the start command path is simple.
-EXPOSE 3000
+# Use dumb-init to handle signals correctly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
-# The "start" script in apps/api/package.json is "node dist/index.js".
-# This CMD will be used by Railway if its "Start Command" is empty, but we will set it explicitly.
+# Set the start command to run the built application.
 CMD ["node", "dist/index.js"] 
