@@ -26,13 +26,13 @@ const logger = pino({
 });
 
 const SCAN_QUEUE_NAME = 'scan-jobs';
-// Use REDIS_URL if available (from Railway), otherwise fall back to host/port (for local Docker)
-const connection = process.env.REDIS_URL
-  ? new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null })
-  : {
-      host: process.env.REDIS_HOST || 'redis',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    };
+if (!process.env.REDIS_URL) {
+  logger.error('FATAL: REDIS_URL environment variable is not set.');
+  process.exit(1);
+}
+const connection = new IORedis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+});
 
 // PostgreSQL Connection Pool
 // SQL to create the table (run this manually or via a migration script):
@@ -50,12 +50,12 @@ CREATE TABLE scan_results (
   error_message TEXT
 );
 */
+if (!process.env.DATABASE_URL) {
+  logger.error('FATAL: DATABASE_URL environment variable is not set.');
+  process.exit(1);
+}
 const pool = new Pool({
-  host: process.env.POSTGRES_HOST || 'postgres',
-  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
-  user: process.env.POSTGRES_USER || 'user',
-  password: process.env.POSTGRES_PASSWORD || 'password',
-  database: process.env.POSTGRES_DB || 'accessibility_scanner_dev',
+  connectionString: process.env.DATABASE_URL,
 });
 
 pool.on('connect', () => {
