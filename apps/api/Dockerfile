@@ -35,7 +35,7 @@ RUN pnpm install --frozen-lockfile
 # Build the specific application (API).
 # pnpm --filter <appName> run <script> executes the script in the context of that app.
 # The appName is defined in apps/api/package.json ("name": "@accessibility-scanner-backend/api")
-RUN pnpm --filter @accessibility-scanner-backend/api run build
+RUN CI=false pnpm --filter @accessibility-scanner-backend/api run build
 # This will create /app/apps/api/dist
 
 # --- Release Stage ---

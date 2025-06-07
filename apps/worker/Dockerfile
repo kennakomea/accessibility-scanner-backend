@@ -44,7 +44,7 @@ RUN pnpm install --frozen-lockfile
 
 # Build the specific application (Worker).
 # The appName is defined in apps/worker/package.json ("name": "@accessibility-scanner-backend/worker")
-RUN pnpm --filter @accessibility-scanner-backend/worker run build
+RUN CI=false pnpm --filter @accessibility-scanner-backend/worker run build
 # This will create /app/apps/worker/dist
 
 # --- Release Stage ---
