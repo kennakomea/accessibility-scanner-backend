@@ -104,7 +104,7 @@ const swaggerOptions = {
       },
     ],
   },
-  apis: ['./src/index.ts'], // Path to the API files with annotations
+  apis: ['./src/index.ts', './dist/index.js'],
 };
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
