@@ -30,7 +30,7 @@ if (!process.env.REDIS_URL) {
   logger.error('FATAL: REDIS_URL environment variable is not set.');
   process.exit(1);
 }
-const connection = new IORedis(process.env.REDIS_URL, {
+const connection = new IORedis(process.env.REDIS_URL + '?family=0', {
   maxRetriesPerRequest: null,
 });
 
