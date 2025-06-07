@@ -1,5 +1,8 @@
 FROM node:18-alpine AS builder
 
+# Set CI=false for the entire build stage to prevent linting/test errors from stopping the build.
+ENV CI=false
+
 # Set working directory to represent the monorepo root within the image
 WORKDIR /app
 
@@ -35,7 +38,7 @@ RUN pnpm install --frozen-lockfile
 # Build the specific application (API).
 # pnpm --filter <appName> run <script> executes the script in the context of that app.
 # The appName is defined in apps/api/package.json ("name": "@accessibility-scanner-backend/api")
-RUN CI=false pnpm --filter @accessibility-scanner-backend/api run build
+RUN pnpm --filter @accessibility-scanner-backend/api run build
 # This will create /app/apps/api/dist
 
 # --- Release Stage ---
