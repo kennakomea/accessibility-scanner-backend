@@ -48,6 +48,12 @@ RUN pnpm install --frozen-lockfile
 # Build the specific application (Worker).
 # The appName is defined in apps/worker/package.json ("name": "@accessibility-scanner-backend/worker")
 RUN pnpm --filter @accessibility-scanner-backend/worker run build
+
+# --- DEBUGGING STEP ---
+# List the contents of the app directory to verify that the 'dist' folder was created.
+RUN ls -la /app/apps/worker
+# --- END DEBUGGING STEP ---
+
 # This will create /app/apps/worker/dist
 
 # --- Release Stage ---
