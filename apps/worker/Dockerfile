@@ -53,7 +53,7 @@ FROM node:18-alpine AS release
 WORKDIR /app
 
 # Install dumb-init, Chromium and its dependencies for Puppeteer runtime.
-# Also install pnpm if you intend to use `pnpm exec` in the CMD, otherwise it might not be needed for `node dist/index.js`.
+# Also install pnpm if you intend to use `pnpm exec` in the CMD.
 RUN apk add --no-cache \
     dumb-init \
     chromium \
@@ -92,4 +92,5 @@ RUN pnpm install --prod --frozen-lockfile --filter @accessibility-scanner-backen
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # The "start" script in apps/worker/package.json is "node dist/index.js".
+# This will be used if the Railway start command is set correctly.
 CMD ["node", "dist/index.js"] 

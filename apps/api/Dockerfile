@@ -70,5 +70,5 @@ EXPOSE 3000
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # The "start" script in apps/api/package.json is "node dist/index.js".
-# This CMD will be used by Railway if its "Start Command" is empty.
+# This CMD will be used by Railway if its "Start Command" is empty, but we will set it explicitly.
 CMD ["node", "dist/index.js"] 
