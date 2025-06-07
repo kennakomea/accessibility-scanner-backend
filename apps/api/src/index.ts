@@ -94,6 +94,11 @@ const connection = new IORedis(process.env.REDIS_URL + '?family=0', {
   maxRetriesPerRequest: null,
 });
 
+// Create a new Redis client specifically for the rate limiter to avoid client compatibility issues.
+const rateLimitRedisClient = new IORedis(process.env.REDIS_URL + '?family=0', {
+  maxRetriesPerRequest: null,
+});
+
 // Rate Limiter setup
 const limiter = rateLimit({
   // 1 minute
@@ -105,7 +110,7 @@ const limiter = rateLimit({
   // Use Redis as the store
   store: new RedisStore({
     // @ts-expect-error - ioredis and redis lib types are not perfectly compatible
-    sendCommand: (...args: string[]) => connection.call(...args),
+    sendCommand: (...args: string[]) => rateLimitRedisClient.call(...args),
   }),
   message: 'Too many requests from this IP, please try again after a minute',
 });
