@@ -14,6 +14,8 @@ This repository contains the backend services for the DAC's web accessibility sc
   - [Environment Variables](#environment-variables)
 - [Database Migrations](#database-migrations)
 - [API Endpoints](#api-endpoints)
+- [Security](#security)
+  - [Rate Limiting](#rate-limiting)
 - [Key Logic](#key-logic)
   - [Scan Processing](#scan-processing)
   - [Accessibility Scoring](#accessibility-scoring)
@@ -198,6 +200,20 @@ Generates and returns a full HTML report for a completed scan.
 -   **Success Response (200 OK):**
     -   **Content-Type:** `text/html`
     -   The response body is a full HTML document containing the formatted scan report, including summary metrics, a screenshot, and a detailed list of all violations.
+
+## Security
+
+### Rate Limiting
+
+To protect the API from abuse and ensure availability, rate limiting is essential. While initial attempts were made to implement rate limiting within the Node.js/Express application itself, this approach proved unreliable in the managed PaaS environment (Railway).
+
+**Recommendation:** Rate limiting should be implemented at the infrastructure level, which is more robust and efficient. This can be done using:
+
+-   An **API Gateway** (e.g., Amazon API Gateway, Kong).
+-   A **reverse proxy** or **load balancer** (e.g., Nginx, Traefik).
+-   An **edge provider** (e.g., Cloudflare, Akamai).
+
+These services can block excessive traffic before it ever reaches the application, providing better protection and performance.
 
 ## Key Logic
 

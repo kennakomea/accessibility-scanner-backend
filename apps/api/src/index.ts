@@ -7,7 +7,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
 import IORedis from 'ioredis';
-import slowDown from 'express-slow-down';
 // import puppeteer from 'puppeteer-core'; // Puppeteer removed
 
 import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
@@ -93,14 +92,6 @@ const connection = new IORedis(process.env.REDIS_URL + '?family=0', {
   maxRetriesPerRequest: null,
 });
 
-// Speed Limiter (based on express-slow-down)
-const speedLimiter = slowDown({
-  windowMs: 60 * 1000, // 1 minute
-  delayAfter: 10, // allow 10 requests per 1 minute, then...
-  delayMs: (hits) => hits * 100, // begin adding 100ms of delay per request above 10
-  maxDelayMs: 2000, // max delay is 2s
-});
-
 const scanQueue = new Queue(SCAN_QUEUE_NAME, {
   connection,
   defaultJobOptions: {
@@ -169,15 +160,6 @@ app.get('/healthz', (req: Request, res: Response) => {
       .send({ status: 'unhealthy', message: 'Failed to write health signal' });
   }
 });
-
-// Add a debug route to check the client IP
-app.get('/ip', (request, response) => {
-  logger.info({ ip: request.ip }, 'Received request for /ip');
-  response.send(request.ip);
-});
-
-// Apply the rate limiting middleware to all API routes
-app.use('/api', speedLimiter);
 
 // New endpoint for scan-website
 app.post('/api/scan-website', async (req: Request, res: Response) => {
