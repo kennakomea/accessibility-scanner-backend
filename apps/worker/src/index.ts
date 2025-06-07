@@ -4,6 +4,7 @@ import fs from 'fs';
 import puppeteer from 'puppeteer';
 import * as axe from 'axe-core';
 import { Pool } from 'pg';
+import IORedis from 'ioredis';
 
 // Define an interface for the context where axe.run is called
 interface AxeContext {
@@ -25,12 +26,13 @@ const logger = pino({
 });
 
 const SCAN_QUEUE_NAME = 'scan-jobs';
-const redisConnectionOptions = {
-  host: process.env.REDIS_HOST || 'redis', // From docker-compose
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  // Add maxRetriesPerRequest: null if you see connection issues in logs
-  // maxRetriesPerRequest: null,
-};
+// Use REDIS_URL if available (from Railway), otherwise fall back to host/port (for local Docker)
+const connection = process.env.REDIS_URL
+  ? new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null })
+  : {
+      host: process.env.REDIS_HOST || 'redis',
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    };
 
 // PostgreSQL Connection Pool
 // SQL to create the table (run this manually or via a migration script):
@@ -331,10 +333,8 @@ const worker = new Worker<ScanJobData, ScanJobResult>(
   SCAN_QUEUE_NAME,
   processScanJob,
   {
-    connection: redisConnectionOptions,
-    concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
-    removeOnComplete: { count: 1000 },
-    removeOnFail: { count: 5000 },
+    connection: connection,
+    concurrency: 5, // Process up to 5 jobs concurrently
   },
 );
 

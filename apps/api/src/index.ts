@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
+import IORedis from 'ioredis';
 // import puppeteer from 'puppeteer-core'; // Puppeteer removed
 
 import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
@@ -81,13 +82,16 @@ const port = process.env.PORT || 3000;
 
 // BullMQ Queue setup
 const SCAN_QUEUE_NAME = 'scan-jobs';
-const redisConnectionOptions = {
-  host: process.env.REDIS_HOST || 'redis',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-};
+// Use REDIS_URL if available (from Railway), otherwise fall back to host/port (for local Docker)
+const connection = process.env.REDIS_URL
+  ? new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null })
+  : {
+      host: process.env.REDIS_HOST || 'redis',
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    };
 
 const scanQueue = new Queue(SCAN_QUEUE_NAME, {
-  connection: redisConnectionOptions,
+  connection: connection,
   defaultJobOptions: {
     attempts: 3,
     backoff: {
