@@ -7,6 +7,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
 import IORedis from 'ioredis';
+import swaggerJsdoc from 'swagger-jsdoc';
+import swaggerUi from 'swagger-ui-express';
 // import puppeteer from 'puppeteer-core'; // Puppeteer removed
 
 import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
@@ -81,6 +83,119 @@ const app = express();
 app.set('trust proxy', 1); // Trust the first proxy in front of the app (Railway's load balancer)
 const port = 3000;
 
+// Swagger/OpenAPI Documentation Setup
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Accessibility Scanner API',
+      version: '1.0.0',
+      description:
+        'API for submitting websites for accessibility scanning and retrieving the results.',
+    },
+    servers: [
+      {
+        url: 'https://api-production-86e5.up.railway.app',
+        description: 'Production Server',
+      },
+      {
+        url: 'http://localhost:3000',
+        description: 'Local Development Server',
+      },
+    ],
+  },
+  apis: ['./src/index.ts'], // Path to the API files with annotations
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+/**
+ * @swagger
+ * tags:
+ *   name: Health
+ *   description: API health check
+ */
+
+/**
+ * @swagger
+ * /healthz:
+ *   get:
+ *     summary: Check API Health
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: The API is running correctly.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ */
+app.get('/healthz', (req: Request, res: Response) => {
+  // Create the health signal file on demand for health checks
+  // This replaces the on-startup file creation for more dynamic health status
+  try {
+    fs.writeFileSync(
+      '/tmp/healthy',
+      'API is healthy at ' + new Date().toISOString(),
+    );
+    res.status(200).send({ status: 'healthy', message: 'API is healthy' });
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to write health signal file');
+    res
+      .status(500)
+      .send({ status: 'unhealthy', message: 'Failed to write health signal' });
+  }
+});
+
+/**
+ * @swagger
+ * tags:
+ *   name: Scanning
+ *   description: Endpoints for initiating scans and retrieving results
+ */
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     ScanRequest:
+ *       type: object
+ *       required:
+ *         - url
+ *       properties:
+ *         url:
+ *           type: string
+ *           format: uri
+ *           description: The URL of the website to scan.
+ *           example: https://www.google.com
+ *     ScanAcceptedResponse:
+ *       type: object
+ *       properties:
+ *         message:
+ *           type: string
+ *           example: Scan request accepted and enqueued. Job ID <uuid>
+ *         jobId:
+ *           type: string
+ *           format: uuid
+ *           example: 123e4567-e89b-12d3-a456-426614174000
+ *         submittedUrl:
+ *           type: string
+ *           format: uri
+ *           example: https://www.google.com
+ *     ErrorResponse:
+ *       type: object
+ *       properties:
+ *         message:
+ *           type: string
+ *           example: Invalid URL format
+ */
+
 // BullMQ Queue setup
 const SCAN_QUEUE_NAME = 'scan-jobs';
 
@@ -143,25 +258,33 @@ app.get('/', (req: Request, res: Response) => {
   res.send('API Service is running!');
 });
 
-// Health check endpoint - useful for ECS, Kubernetes, Docker health checks
-app.get('/healthz', (req: Request, res: Response) => {
-  // Create the health signal file on demand for health checks
-  // This replaces the on-startup file creation for more dynamic health status
-  try {
-    fs.writeFileSync(
-      '/tmp/healthy',
-      'API is healthy at ' + new Date().toISOString(),
-    );
-    res.status(200).send({ status: 'healthy', message: 'API is healthy' });
-  } catch (error) {
-    logger.error({ err: error }, 'Failed to write health signal file');
-    res
-      .status(500)
-      .send({ status: 'unhealthy', message: 'Failed to write health signal' });
-  }
-});
-
 // New endpoint for scan-website
+/**
+ * @swagger
+ * /api/scan-website:
+ *   post:
+ *     summary: Submit a website for scanning
+ *     tags: [Scanning]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/ScanRequest'
+ *     responses:
+ *       202:
+ *         description: Scan request accepted.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ScanAcceptedResponse'
+ *       400:
+ *         description: Bad request, likely an invalid URL.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 app.post('/api/scan-website', async (req: Request, res: Response) => {
   const validationResult = scanWebsiteSchema.safeParse(req.body);
 
@@ -208,7 +331,44 @@ app.post('/api/scan-website', async (req: Request, res: Response) => {
   }
 });
 
-// New endpoint to get scan results by Job ID
+/**
+ * @swagger
+ * /api/scan-results/{jobId}:
+ *   get:
+ *     summary: Retrieve scan results
+ *     tags: [Scanning]
+ *     parameters:
+ *       - in: path
+ *         name: jobId
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         required: true
+ *         description: The ID of the job to retrieve results for.
+ *     responses:
+ *       200:
+ *         description: Scan results returned successfully. The structure of a full result is complex and contains the axe-core violations array.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 scan_success:
+ *                   type: boolean
+ *                 # Add other key properties here for documentation clarity
+ *                 page_title:
+ *                   type: string
+ *                 violations:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       404:
+ *         description: Scan result not found. The job may still be in progress or the ID is invalid.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 app.get('/api/scan-results/:jobId', async (req: Request, res: Response) => {
   const { jobId } = req.params;
 
