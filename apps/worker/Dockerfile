@@ -44,11 +44,6 @@ RUN pnpm install --frozen-lockfile
 # The appName is defined in apps/worker/package.json ("name": "@accessibility-scanner-backend/worker")
 RUN pnpm --filter @accessibility-scanner-backend/worker run build
 
-# --- DEBUGGING STEP ---
-# List the contents of the app directory to verify that the 'dist' folder was created.
-RUN ls -la /app/apps/worker
-# --- END DEBUGGING STEP ---
-
 # This will create /app/apps/worker/dist
 
 # --- Release Stage ---
@@ -56,10 +51,11 @@ FROM node:18-alpine AS release
 
 WORKDIR /app
 
-# Install dumb-init, Chromium and its dependencies for Puppeteer runtime.
-# Also install pnpm if you intend to use `pnpm exec` in the CMD.
+# Install pnpm and dumb-init.
+RUN npm install -g pnpm && apk add --no-cache dumb-init
+
+# Install Chromium and its dependencies for Puppeteer runtime.
 RUN apk add --no-cache \
-    dumb-init \
     chromium \
     nss \
     freetype \
@@ -67,29 +63,23 @@ RUN apk add --no-cache \
     ttf-freefont \
     udev \
     fontconfig \
-    dbus \
-    && npm install -g pnpm
+    dbus
 
 # Set environment variables for Puppeteer again for the release stage
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Create a subdirectory for the app's package.json to ensure pnpm workspace setup is recognized
-RUN mkdir -p ./apps/worker
+# Copy only the final, built application code from the builder stage.
+COPY --from=builder /app/apps/worker/dist ./
 
-# Copy the built 'dist' folder from the builder stage.
-COPY --from=builder /app/apps/worker/dist ./dist
+# Copy the package.json for the specific app to the root of our new stage.
+COPY --from=builder /app/apps/worker/package.json ./
 
-# Copy the necessary package.json files directly from the build context.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/worker/package.json ./apps/worker/package.json
-
-# Reinstall production dependencies for only the Worker service.
-# We add --ignore-scripts to prevent development lifecycle scripts (like husky's "prepare") from running.
-RUN pnpm install --prod --ignore-scripts --filter @accessibility-scanner-backend/worker
+# Install ONLY production dependencies based on the standalone package.json.
+RUN pnpm install --prod --ignore-scripts
 
 # Use dumb-init to handle signals correctly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # Set the start command to run the built application.
-CMD ["node", "dist/index.js"] 
+CMD ["node", "index.js"] 

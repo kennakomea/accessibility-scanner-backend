@@ -26,37 +26,31 @@ RUN pnpm install --frozen-lockfile
 # The appName is defined in apps/api/package.json ("name": "@accessibility-scanner-backend/api")
 RUN pnpm --filter @accessibility-scanner-backend/api run build
 
-# --- DEBUGGING STEP ---
-# List the contents of the app directory to verify that the 'dist' folder was created.
-RUN ls -la /app/apps/api
-# --- END DEBUGGING STEP ---
-
-# This will create /app/apps/api/dist
-
+# At the end of the 'builder' stage, the built files are located at:
+# /app/apps/api/dist/
 # --- Release Stage ---
 FROM node:18-alpine AS release
 
 WORKDIR /app
 
-# Install dumb-init for better signal handling and pnpm for the start command if it uses pnpm exec
-RUN apk add --no-cache dumb-init && npm install -g pnpm
+# Install pnpm to run the install command and dumb-init for signal handling.
+RUN npm install -g pnpm && apk add --no-cache dumb-init
 
-# Create a subdirectory for the app's package.json to ensure pnpm workspace setup is recognized
-RUN mkdir -p ./apps/api
+# Copy only the final, built application code from the builder stage.
+# The contents of `dist` are copied directly into the current WORKDIR (/app).
+COPY --from=builder /app/apps/api/dist ./
 
-# Copy the built 'dist' folder from the builder stage.
-COPY --from=builder /app/apps/api/dist ./dist
+# Copy the package.json for the specific app to the root of our new stage.
+# This makes the app standalone.
+COPY --from=builder /app/apps/api/package.json ./
 
-# Copy the necessary package.json files directly from the build context, not from the builder stage.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/api/package.json ./apps/api/package.json
-
-# Reinstall production dependencies for only the API service in its final location.
-# This ensures a lean production image with only necessary dependencies.
-RUN pnpm install --prod --ignore-scripts --filter @accessibility-scanner-backend/api
+# Install ONLY production dependencies based on the standalone package.json.
+# This creates a lean, clean node_modules folder.
+RUN pnpm install --prod --ignore-scripts
 
 # Use dumb-init to handle signals correctly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # Set the start command to run the built application.
-CMD ["node", "dist/index.js"] 
+# Since we copied the contents of `dist` to `/app`, the main file is now at `/app/index.js`.
+CMD ["node", "index.js"] 
