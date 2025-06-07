@@ -53,7 +53,7 @@ COPY apps/api/package.json ./apps/api/package.json
 
 # Reinstall production dependencies for only the API service in its final location.
 # This ensures a lean production image with only necessary dependencies.
-RUN pnpm install --prod --filter @accessibility-scanner-backend/api
+RUN pnpm install --prod --ignore-scripts --filter @accessibility-scanner-backend/api
 
 # Use dumb-init to handle signals correctly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]

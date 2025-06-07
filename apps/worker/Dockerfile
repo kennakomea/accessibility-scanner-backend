@@ -85,7 +85,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/worker/package.json ./apps/worker/package.json
 
 # Reinstall production dependencies for only the Worker service.
-RUN pnpm install --prod --filter @accessibility-scanner-backend/worker
+# We add --ignore-scripts to prevent development lifecycle scripts (like husky's "prepare") from running.
+RUN pnpm install --prod --ignore-scripts --filter @accessibility-scanner-backend/worker
 
 # Use dumb-init to handle signals correctly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
