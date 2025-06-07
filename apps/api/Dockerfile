@@ -46,28 +46,29 @@ WORKDIR /app
 # Install dumb-init for better signal handling and pnpm for the start command if it uses pnpm exec
 RUN apk add --no-cache dumb-init && npm install -g pnpm
 
-# Copy only the necessary production artifacts for the API app from the builder stage.
-# Copy the built 'dist' folder of the API app.
-COPY --from=builder /app/apps/api/dist ./apps/api/dist
+# Create a subdirectory for the app's package.json to ensure pnpm workspace setup is recognized
+RUN mkdir -p ./apps/api
 
-# Copy the API app's package.json (needed if start script refers to it, or for metadata).
+# Copy the built 'dist' folder directly into the root of the WORKDIR
+COPY --from=builder /app/apps/api/dist ./dist
+
+# Copy the API app's package.json into its new location.
 COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
 
-# Copy the root package.json and workspace files for pnpm to understand the context if needed for runtime.
-COPY --from=builder /app/package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ./
+# Copy the root package.json and workspace files for pnpm to understand the context for runtime.
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-lock.yaml ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
 
 # Reinstall production dependencies for only the API service in its final location.
 # This ensures a lean production image with only necessary node_modules.
-# The WORKDIR needs to be the monorepo root for `pnpm install --filter` to work correctly referencing the workspace.
+# The WORKDIR is the monorepo root for `pnpm install --filter` to work correctly referencing the workspace.
 RUN pnpm install --prod --frozen-lockfile --filter @accessibility-scanner-backend/api...
 
-# Set the final working directory to the specific app for running it.
-WORKDIR /app/apps/api
-
+# The WORKDIR is already /app, so the start command path is simple.
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # The "start" script in apps/api/package.json is "node dist/index.js".
-# This CMD will be used by Railway if you choose "Use Dockerfile Start Command".
-# Otherwise, Railway will use the "Start Command" you define in its UI.
+# This CMD will be used by Railway if its "Start Command" is empty.
 CMD ["node", "dist/index.js"] 

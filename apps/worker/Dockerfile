@@ -70,23 +70,25 @@ RUN apk add --no-cache \
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Copy only the necessary production artifacts for the Worker app from the builder stage.
-# Copy the built 'dist' folder of the Worker app.
-COPY --from=builder /app/apps/worker/dist ./apps/worker/dist
+# Create a subdirectory for the app's package.json to ensure pnpm workspace setup is recognized
+RUN mkdir -p ./apps/worker
+
+# Copy the built 'dist' folder directly into the root of the WORKDIR
+COPY --from=builder /app/apps/worker/dist ./dist
 
 # Copy the Worker app's package.json.
 COPY --from=builder /app/apps/worker/package.json ./apps/worker/package.json
 
 # Copy the root package.json and workspace files for pnpm to understand the context for installing filtered prod dependencies.
-COPY --from=builder /app/package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ./
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-lock.yaml ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
 
 # Reinstall production dependencies for only the Worker service in its final location.
 # This ensures a lean production image with only necessary node_modules for the worker.
 RUN pnpm install --prod --frozen-lockfile --filter @accessibility-scanner-backend/worker...
 
-# Set the final working directory to the specific app for running it.
-WORKDIR /app/apps/worker
-
+# The WORKDIR is already /app, so the start command path is simple.
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # The "start" script in apps/worker/package.json is "node dist/index.js".
