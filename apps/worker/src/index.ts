@@ -35,21 +35,6 @@ const connection = new IORedis(process.env.REDIS_URL + '?family=0', {
 });
 
 // PostgreSQL Connection Pool
-// SQL to create the table (run this manually or via a migration script):
-/*
-CREATE TABLE scan_results (
-  id SERIAL PRIMARY KEY,
-  job_id VARCHAR(255) UNIQUE,
-  original_job_id VARCHAR(255),
-  submitted_url TEXT NOT NULL,
-  actual_url TEXT,
-  scan_timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  page_title TEXT,
-  scan_success BOOLEAN NOT NULL,
-  violations JSONB,
-  error_message TEXT
-);
-*/
 if (!process.env.DATABASE_URL) {
   logger.error('FATAL: DATABASE_URL environment variable is not set.');
   process.exit(1);
@@ -97,24 +82,30 @@ async function processScanJob(
   );
 
   let browser;
-  let actualUrl;
-  let pageTitleFromScan;
-  let scanSucceeded = false;
-  let axeScanResults: axe.AxeResults | undefined;
-  let processingError: Error | undefined;
-  let dbErrorMessage: string | undefined;
-  let pageScreenshotBase64: string | undefined;
+  const scanResult: {
+    actualUrl?: string;
+    pageTitle?: string;
+    scanSucceeded: boolean;
+    axeResults?: axe.AxeResults;
+    processingError?: Error;
+    screenshot?: string;
+  } = {
+    scanSucceeded: false,
+  };
 
   try {
+    // Launch Puppeteer with optimizations for containerized environments
     browser = await puppeteer.launch({
       headless: true,
+      // Recommended args for running in Docker, especially in a constrained environment like Railway
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', // Important for Docker
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
+        '--no-sandbox', // Disables the Chrome sandbox, necessary for many Docker environments
+        '--disable-setuid-sandbox', // Also for sandbox compatibility
+        '--disable-dev-shm-usage', // Writes to /tmp instead of shared memory, preventing crashes
+        '--disable-accelerated-2d-canvas', // Disables GPU hardware acceleration
+        '--disable-gpu', // General GPU disable
       ],
+      // Increased timeout to prevent ProtocolError on slower server starts
       protocolTimeout: 90000, // 90 seconds
     });
     const page = await browser.newPage();
@@ -123,16 +114,23 @@ async function processScanJob(
     const urlToScan = job.data?.submittedUrl || 'https://example.com';
     logger.info({ jobId: job.id, url: urlToScan }, 'Navigating to page');
     const response = await page.goto(urlToScan, { waitUntil: 'networkidle2' });
-    actualUrl = response?.url() || urlToScan; // Get actual URL after redirects
+    scanResult.actualUrl = response?.url() || urlToScan;
 
-    pageTitleFromScan = await page.title();
+    scanResult.pageTitle = await page.title();
     logger.info(
-      { jobId: job.id, title: pageTitleFromScan, actualUrl },
+      {
+        jobId: job.id,
+        title: scanResult.pageTitle,
+        actualUrl: scanResult.actualUrl,
+      },
       'Page title retrieved',
     );
 
-    if (!pageTitleFromScan) {
-      logger.warn({ jobId: job.id, url: actualUrl }, 'Page title is empty');
+    if (!scanResult.pageTitle) {
+      logger.warn(
+        { jobId: job.id, url: scanResult.actualUrl },
+        'Page title is empty',
+      );
     }
 
     const axeScript = await fs.promises.readFile(
@@ -143,7 +141,7 @@ async function processScanJob(
 
     // Capture screenshot after page load and before Axe scan
     try {
-      pageScreenshotBase64 = await page.screenshot({
+      scanResult.screenshot = await page.screenshot({
         encoding: 'base64',
         type: 'jpeg',
         quality: 75,
@@ -163,47 +161,40 @@ async function processScanJob(
       // Not treating screenshot failure as a critical error for the scan itself
     }
 
-    axeScanResults = (await page.evaluate(() => {
+    scanResult.axeResults = (await page.evaluate(() => {
       // @ts-expect-error TS2304: Cannot find name 'window'. 'window' is a browser global.
       return (window as unknown as AxeContext).axe.run();
     })) as axe.AxeResults;
 
     logger.info(
-      { jobId: job.id, violations: axeScanResults.violations.length },
+      { jobId: job.id, violations: scanResult.axeResults.violations.length },
       'Axe-core scan completed',
     );
 
-    if (axeScanResults.violations.length > 0) {
+    if (scanResult.axeResults.violations.length > 0) {
       logger.warn(
-        { jobId: job.id, violations: axeScanResults.violations },
+        { jobId: job.id, violations: scanResult.axeResults.violations },
         'Accessibility violations found',
       );
     }
-    scanSucceeded = true;
+    scanResult.scanSucceeded = true;
     logger.info(
       { jobId: job.id },
       'Job processing completed successfully by Puppeteer/Axe',
     );
   } catch (e: unknown) {
-    let errMessage =
-      'An unknown error occurred during Puppeteer or Axe-core processing';
-    let errStack: string | undefined;
-    let caughtError: Error;
-
     if (e instanceof Error) {
-      errMessage = e.message;
-      errStack = e.stack;
-      caughtError = e;
-    } else if (typeof e === 'string') {
-      errMessage = e;
-      caughtError = new Error(e);
+      scanResult.processingError = e;
     } else {
-      caughtError = new Error(errMessage);
+      scanResult.processingError = new Error(String(e));
     }
-    processingError = caughtError;
 
     logger.error(
-      { jobId: job.id, error: errMessage, stack: errStack },
+      {
+        jobId: job.id,
+        error: scanResult.processingError.message,
+        stack: scanResult.processingError.stack,
+      },
       'Error during Puppeteer or Axe-core processing',
     );
   } finally {
@@ -213,110 +204,24 @@ async function processScanJob(
     }
   }
 
-  let dbSaveSuccess = false;
-  if (scanSucceeded) {
-    try {
-      const insertQuery = `
-        INSERT INTO scan_results
-          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message, page_screenshot)
-        VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id;
-      `;
-      const values = [
-        job.id,
-        job.data?.originalJobId,
-        job.data?.submittedUrl,
-        actualUrl,
-        pageTitleFromScan,
-        true,
-        JSON.stringify(axeScanResults?.violations),
-        null,
-        pageScreenshotBase64 || null,
-      ];
-      const res = await pool.query(insertQuery, values);
-      logger.info(
-        { jobId: job.id, dbRecordId: res.rows[0].id },
-        'Scan result saved to database',
-      );
-      dbSaveSuccess = true;
-    } catch (dbErrUnknown: unknown) {
-      let specificErrorMsg = 'Unknown database error';
-      let errorStack: string | undefined;
-      if (dbErrUnknown instanceof Error) {
-        specificErrorMsg = dbErrUnknown.message;
-        errorStack = dbErrUnknown.stack;
-      } else if (typeof dbErrUnknown === 'string') {
-        specificErrorMsg = dbErrUnknown;
-      }
-      dbErrorMessage = `Failed to save scan result to database: ${specificErrorMsg}`;
-      logger.error(
-        { jobId: job.id, error: specificErrorMsg, stack: errorStack },
-        dbErrorMessage,
-      );
-    }
-  } else {
-    try {
-      const insertQuery = `
-        INSERT INTO scan_results
-          (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message, page_screenshot)
-        VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id;
-      `;
-      const values = [
-        job.id,
-        job.data?.originalJobId,
-        job.data?.submittedUrl,
-        actualUrl,
-        pageTitleFromScan,
-        false,
-        null,
-        processingError?.message,
-        pageScreenshotBase64 || null,
-      ];
-      const res = await pool.query(insertQuery, values);
-      logger.info(
-        { jobId: job.id, dbRecordId: res.rows[0].id },
-        'Scan failure attempt logged to database',
-      );
-      dbSaveSuccess = true;
-    } catch (dbErrUnknown: unknown) {
-      let specificErrorMsg =
-        'Unknown database error while saving failure record';
-      let errorStack: string | undefined;
-      if (dbErrUnknown instanceof Error) {
-        specificErrorMsg = dbErrUnknown.message;
-        errorStack = dbErrUnknown.stack;
-      } else if (typeof dbErrUnknown === 'string') {
-        specificErrorMsg = dbErrUnknown;
-      }
-      dbErrorMessage = `Failed to save scan failure record to database: ${specificErrorMsg}`;
-      logger.error(
-        {
-          jobId: job.id,
-          error: specificErrorMsg,
-          stack: errorStack,
-          originalProcessingError: processingError?.message,
-        },
-        dbErrorMessage,
-      );
-    }
-  }
+  const { dbSaveSuccess, dbErrorMessage } = await saveScanResultToDb(
+    job,
+    scanResult,
+  );
 
-  const overallJobSuccess = scanSucceeded && dbSaveSuccess;
+  const overallJobSuccess = scanResult.scanSucceeded && dbSaveSuccess;
 
   if (overallJobSuccess) {
     return {
       success: true,
       jobId: job.id,
       data: job.data,
-      violations: axeScanResults!.violations,
-      pageTitle: pageTitleFromScan,
-      actualUrl: actualUrl,
+      violations: scanResult.axeResults!.violations,
+      pageTitle: scanResult.pageTitle,
+      actualUrl: scanResult.actualUrl,
     };
   } else {
-    let finalErrorMessage = processingError?.message || '';
+    let finalErrorMessage = scanResult.processingError?.message || '';
     if (dbErrorMessage) {
       if (finalErrorMessage) finalErrorMessage += '; ';
       finalErrorMessage += dbErrorMessage;
@@ -329,9 +234,69 @@ async function processScanJob(
       jobId: job.id,
       data: job.data,
       errorMessage: finalErrorMessage,
-      pageTitle: pageTitleFromScan,
-      actualUrl: actualUrl,
+      pageTitle: scanResult.pageTitle,
+      actualUrl: scanResult.actualUrl,
     };
+  }
+}
+
+async function saveScanResultToDb(
+  job: Job<ScanJobData, ScanJobResult>,
+  scanResult: {
+    actualUrl?: string;
+    pageTitle?: string;
+    scanSucceeded: boolean;
+    axeResults?: axe.AxeResults;
+    processingError?: Error;
+    screenshot?: string;
+  },
+): Promise<{ dbSaveSuccess: boolean; dbErrorMessage?: string }> {
+  try {
+    const insertQuery = `
+      INSERT INTO scan_results
+        (job_id, original_job_id, submitted_url, actual_url, page_title, scan_success, violations, error_message, page_screenshot)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING id;
+    `;
+    const values = [
+      job.id,
+      job.data?.originalJobId,
+      job.data?.submittedUrl,
+      scanResult.actualUrl,
+      scanResult.pageTitle,
+      scanResult.scanSucceeded,
+      scanResult.scanSucceeded
+        ? JSON.stringify(scanResult.axeResults?.violations)
+        : null,
+      scanResult.scanSucceeded ? null : scanResult.processingError?.message,
+      scanResult.screenshot || null,
+    ];
+
+    const res = await pool.query(insertQuery, values);
+    logger.info(
+      { jobId: job.id, dbRecordId: res.rows[0].id },
+      `Scan ${
+        scanResult.scanSucceeded ? 'result' : 'failure log'
+      } saved to database`,
+    );
+
+    return { dbSaveSuccess: true };
+  } catch (dbErr: unknown) {
+    const err =
+      dbErr instanceof Error ? dbErr : new Error('Unknown database error');
+    const dbErrorMessage = `Failed to save scan result to database: ${err.message}`;
+    logger.error(
+      {
+        jobId: job.id,
+        error: err.message,
+        stack: err.stack,
+        originalProcessingError: scanResult.processingError?.message,
+      },
+      dbErrorMessage,
+    );
+
+    return { dbSaveSuccess: false, dbErrorMessage };
   }
 }
 

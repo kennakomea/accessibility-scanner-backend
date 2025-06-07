@@ -7,6 +7,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { Queue } from 'bullmq';
 import { Pool } from 'pg';
 import IORedis from 'ioredis';
+import { rateLimit } from 'express-rate-limit';
+import RedisStore from 'rate-limit-redis';
 // import puppeteer from 'puppeteer-core'; // Puppeteer removed
 
 import { scanWebsiteSchema } from './validation/scanWebsiteSchema';
@@ -78,6 +80,7 @@ const logger = pino({
 });
 
 const app = express();
+app.set('trust proxy', 1); // Trust the first proxy in front of the app (Railway's load balancer)
 const port = 3000;
 
 // BullMQ Queue setup
@@ -89,6 +92,22 @@ if (!process.env.REDIS_URL) {
 }
 const connection = new IORedis(process.env.REDIS_URL + '?family=0', {
   maxRetriesPerRequest: null,
+});
+
+// Rate Limiter setup
+const limiter = rateLimit({
+  // 1 minute
+  windowMs: 60 * 1000,
+  // Limit each IP to 10 requests per `window` (here, per 1 minute)
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  // Use Redis as the store
+  store: new RedisStore({
+    // @ts-expect-error - ioredis and redis lib types are not perfectly compatible
+    sendCommand: (...args: string[]) => connection.call(...args),
+  }),
+  message: 'Too many requests from this IP, please try again after a minute',
 });
 
 const scanQueue = new Queue(SCAN_QUEUE_NAME, {
@@ -159,6 +178,15 @@ app.get('/healthz', (req: Request, res: Response) => {
       .send({ status: 'unhealthy', message: 'Failed to write health signal' });
   }
 });
+
+// Add a debug route to check the client IP
+app.get('/ip', (request, response) => {
+  logger.info({ ip: request.ip }, 'Received request for /ip');
+  response.send(request.ip);
+});
+
+// Apply the rate limiting middleware to all API routes
+app.use('/api', limiter);
 
 // New endpoint for scan-website
 app.post('/api/scan-website', async (req: Request, res: Response) => {
