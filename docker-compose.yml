@@ -16,8 +16,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: development
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: user
@@ -44,8 +43,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: development
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: user
